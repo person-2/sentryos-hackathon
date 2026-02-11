@@ -1,11 +1,12 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { Send, Bot, User, Loader2, Wrench, Search, Globe, FileText, Terminal } from 'lucide-react'
+import { Send, Bot, User, Loader2, Wrench, Search, Globe, FileText, Terminal, Mic, MicOff } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import { useVoiceInput } from '@/hooks/useVoiceInput'
 
 interface Message {
   id: string
@@ -59,6 +60,36 @@ export function Chat() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
+  // Voice input functionality
+  const {
+    isListening,
+    transcript,
+    startListening,
+    stopListening,
+    isSupported: isVoiceSupported,
+    error: voiceError
+  } = useVoiceInput({
+    onTranscript: (text) => {
+      setInput(text)
+    },
+    continuous: false
+  })
+
+  // Update input when transcript changes
+  useEffect(() => {
+    if (transcript) {
+      setInput(transcript)
+    }
+  }, [transcript])
+
+  const toggleVoiceInput = () => {
+    if (isListening) {
+      stopListening()
+    } else {
+      startListening()
+    }
+  }
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }
@@ -70,6 +101,9 @@ export function Chat() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!input.trim() || isLoading) return
+
+    // Stop voice recording if active
+    if (isListening) stopListening()
 
     const userMessage: Message = {
       id: crypto.randomUUID(),
@@ -354,11 +388,34 @@ export function Chat() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Type a message..."
-            className="flex-1 bg-[#1e1a2a] text-[#e8e4f0] text-sm rounded px-3 py-2 border border-[#362552] focus:border-[#7553ff] focus:outline-none resize-none placeholder:text-[#9086a3]"
+            placeholder={isListening ? "Listening..." : "Type or speak a message..."}
+            className={`flex-1 bg-[#1e1a2a] text-[#e8e4f0] text-sm rounded px-3 py-2 border focus:outline-none resize-none placeholder:text-[#9086a3] ${
+              isListening
+                ? 'border-red-500/60 focus:border-red-500'
+                : 'border-[#362552] focus:border-[#7553ff]'
+            }`}
             rows={2}
             disabled={isLoading}
           />
+          {isVoiceSupported && (
+            <button
+              type="button"
+              onClick={toggleVoiceInput}
+              disabled={isLoading}
+              className={`px-3 py-2 rounded transition-all ${
+                isListening
+                  ? 'bg-red-500 hover:bg-red-600 animate-pulse'
+                  : 'bg-[#362552] hover:bg-[#443061]'
+              } disabled:bg-[#362552] disabled:cursor-not-allowed`}
+              title={isListening ? 'Stop recording' : 'Start voice input'}
+            >
+              {isListening ? (
+                <MicOff className="w-5 h-5 text-white" />
+              ) : (
+                <Mic className="w-5 h-5 text-[#c4b5fd]" />
+              )}
+            </button>
+          )}
           <button
             type="submit"
             disabled={isLoading || !input.trim()}
@@ -367,7 +424,15 @@ export function Chat() {
             <Send className="w-5 h-5 text-white" />
           </button>
         </div>
-        <p className="text-[10px] text-[#9086a3] mt-1.5">Press Enter to send, Shift+Enter for new line</p>
+        <div className="flex items-center justify-between mt-1.5">
+          <p className="text-[10px] text-[#9086a3]">
+            Press Enter to send, Shift+Enter for new line
+            {isVoiceSupported && ' • Click mic to speak'}
+          </p>
+          {voiceError && (
+            <p className="text-[10px] text-red-400">{voiceError}</p>
+          )}
+        </div>
       </form>
     </div>
   )
