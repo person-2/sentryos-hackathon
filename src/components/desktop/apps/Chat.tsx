@@ -70,6 +70,9 @@ export function Chat() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
+  const formRef = useRef<HTMLFormElement>(null)
+  const autoSendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   // Voice input functionality
   const {
     isListening,
@@ -82,18 +85,31 @@ export function Chat() {
     onTranscript: (text) => {
       setInput(text)
     },
-    continuous: false
+    continuous: true
   })
 
-  // Update input when transcript changes
+  // Update input when transcript changes, and reset the auto-send timer
   useEffect(() => {
     if (transcript) {
       setInput(transcript)
     }
-  }, [transcript])
+
+    // Reset auto-send timer whenever transcript changes while listening
+    if (isListening && transcript) {
+      if (autoSendTimerRef.current) clearTimeout(autoSendTimerRef.current)
+      autoSendTimerRef.current = setTimeout(() => {
+        formRef.current?.requestSubmit()
+      }, 2000)
+    }
+
+    return () => {
+      if (autoSendTimerRef.current) clearTimeout(autoSendTimerRef.current)
+    }
+  }, [transcript, isListening])
 
   const toggleVoiceInput = () => {
     if (isListening) {
+      if (autoSendTimerRef.current) clearTimeout(autoSendTimerRef.current)
       stopListening()
     } else {
       startListening()
@@ -112,7 +128,8 @@ export function Chat() {
     e.preventDefault()
     if (!input.trim() || isLoading) return
 
-    // Stop voice recording if active
+    // Stop voice recording and clear auto-send timer
+    if (autoSendTimerRef.current) clearTimeout(autoSendTimerRef.current)
     if (isListening) stopListening()
 
     const requestId = generateRequestId()
@@ -505,7 +522,7 @@ export function Chat() {
       </div>
 
       {/* Input */}
-      <form onSubmit={handleSubmit} className="p-3 border-t border-[#362552] bg-[#2a2438]">
+      <form ref={formRef} onSubmit={handleSubmit} className="p-3 border-t border-[#362552] bg-[#2a2438]">
         <div className="flex gap-2">
           <textarea
             ref={inputRef}
@@ -551,7 +568,7 @@ export function Chat() {
         <div className="flex items-center justify-between mt-1.5">
           <p className="text-[10px] text-[#9086a3]">
             Press Enter to send, Shift+Enter for new line
-            {isVoiceSupported && ' • Click mic to speak'}
+            {isVoiceSupported && (isListening ? ' • Auto-sends after 2s pause' : ' • Click mic to speak')}
           </p>
           {voiceError && (
             <p className="text-[10px] text-red-400">{voiceError}</p>
