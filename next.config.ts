@@ -3,7 +3,9 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {};
 
-export default withSentryConfig(nextConfig, {
+// Only apply Sentry webpack plugin in production builds or when explicitly enabled
+// This prevents conflicts with Turbopack in development
+const sentryWebpackPluginOptions = {
   // For all available options, see:
   // https://github.com/getsentry/sentry-webpack-plugin#options
 
@@ -40,4 +42,9 @@ export default withSentryConfig(nextConfig, {
   // https://docs.sentry.io/product/crons/
   // https://vercel.com/docs/cron-jobs
   automaticVercelMonitors: true,
-});
+};
+
+// In development with Turbopack, skip the Sentry webpack plugin to avoid conflicts
+export default process.env.NODE_ENV === "production"
+  ? withSentryConfig(nextConfig, sentryWebpackPluginOptions)
+  : nextConfig;
