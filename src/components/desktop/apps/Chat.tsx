@@ -7,6 +7,16 @@ import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { useVoiceInput } from '@/hooks/useVoiceInput'
+import {
+  logInfo,
+  logWarn,
+  logError,
+  incrementCounter,
+  recordDistribution,
+  buildChatAttributes,
+  buildErrorAttributes,
+  generateRequestId,
+} from '@/lib/sentry-utils'
 
 interface Message {
   id: string
@@ -105,6 +115,9 @@ export function Chat() {
     // Stop voice recording if active
     if (isListening) stopListening()
 
+    const requestId = generateRequestId()
+    const requestStartTime = Date.now()
+
     const userMessage: Message = {
       id: crypto.randomUUID(),
       role: 'user',
@@ -112,12 +125,34 @@ export function Chat() {
       timestamp: new Date()
     }
 
+    // Log user message submission
+    logInfo('User message submitted', buildChatAttributes(
+      requestId,
+      messages.length + 1,
+      {
+        'chat.user_message_id': userMessage.id,
+        'chat.message_length': userMessage.content.length,
+      }
+    ))
+
+    // Track metrics
+    incrementCounter('chat.client.messages.sent')
+    recordDistribution('chat.client.message_length', userMessage.content.length, {}, 'character')
+
     setMessages(prev => [...prev, userMessage])
     setInput('')
     setIsLoading(true)
     setCurrentTool(null)
 
     try {
+      logInfo('Chat API request initiated', buildChatAttributes(
+        requestId,
+        messages.length + 1,
+        {
+          'chat.user_message_id': userMessage.id,
+        }
+      ))
+
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: {
@@ -132,19 +167,46 @@ export function Chat() {
       })
 
       if (!response.ok) {
+        logWarn('Chat API request failed', buildChatAttributes(
+          requestId,
+          messages.length + 1,
+          {
+            'response.status': response.status,
+            'response.statusText': response.statusText,
+          }
+        ))
+        incrementCounter('chat.client.requests.failed', 1, { status: response.status.toString() })
         throw new Error('Failed to get response')
       }
 
       // Handle SSE streaming response
       const reader = response.body?.getReader()
       if (!reader) {
+        logError('No response body received', buildChatAttributes(
+          requestId,
+          messages.length + 1
+        ))
+        incrementCounter('chat.client.errors', 1, { type: 'no_response_body' })
         throw new Error('No response body')
       }
 
+      const streamStartTime = Date.now()
       const decoder = new TextDecoder()
       let streamingContent = ''
       const streamingMessageId = crypto.randomUUID()
-      
+      let textDeltaCount = 0
+      const toolsUsed = new Set<string>()
+      let parseErrorCount = 0
+
+      logInfo('SSE stream started', buildChatAttributes(
+        requestId,
+        messages.length + 1,
+        {
+          'chat.user_message_id': userMessage.id,
+          'chat.streaming_message_id': streamingMessageId,
+        }
+      ))
+
       // Add a placeholder message for streaming content
       setMessages(prev => [...prev, {
         id: streamingMessageId,
@@ -167,18 +229,20 @@ export function Chat() {
 
             try {
               const parsed = JSON.parse(data)
-              
+
               if (parsed.type === 'text_delta') {
                 // Append streaming text
+                textDeltaCount++
                 streamingContent += parsed.text
                 setCurrentTool(null) // Clear tool status when text starts flowing
                 // Update the streaming message
-                setMessages(prev => prev.map(msg => 
-                  msg.id === streamingMessageId 
+                setMessages(prev => prev.map(msg =>
+                  msg.id === streamingMessageId
                     ? { ...msg, content: streamingContent }
                     : msg
                 ))
               } else if (parsed.type === 'tool_start') {
+                toolsUsed.add(parsed.tool)
                 setCurrentTool({
                   name: parsed.tool,
                   status: 'running'
@@ -191,26 +255,86 @@ export function Chat() {
               } else if (parsed.type === 'done') {
                 setCurrentTool(null)
               } else if (parsed.type === 'error') {
+                logWarn('Server error received in stream', buildChatAttributes(
+                  requestId,
+                  messages.length + 1,
+                  {
+                    'error.message': parsed.message,
+                  }
+                ))
                 streamingContent = 'Sorry, I encountered an error processing your request.'
-                setMessages(prev => prev.map(msg => 
-                  msg.id === streamingMessageId 
+                setMessages(prev => prev.map(msg =>
+                  msg.id === streamingMessageId
                     ? { ...msg, content: streamingContent }
                     : msg
                 ))
                 setCurrentTool(null)
               }
-            } catch {
-              // Ignore parse errors for incomplete chunks
+            } catch (error) {
+              // Log parse errors instead of silently ignoring them
+              parseErrorCount++
+              logWarn('SSE parse error', buildChatAttributes(
+                requestId,
+                messages.length + 1,
+                {
+                  'error.data': data.substring(0, 100),
+                  'error.message': error instanceof Error ? error.message : 'Unknown error',
+                }
+              ))
+              incrementCounter('chat.client.parse_errors', 1)
             }
           }
         }
       }
 
+      const streamDuration = (Date.now() - streamStartTime) / 1000
+      const requestDuration = (Date.now() - requestStartTime) / 1000
+
+      // Log stream completion with statistics
+      logInfo('SSE stream completed', buildChatAttributes(
+        requestId,
+        messages.length + 1,
+        {
+          'chat.streaming_message_id': streamingMessageId,
+          'stream.duration_seconds': streamDuration,
+          'stream.text_delta_count': textDeltaCount,
+          'stream.tools_used_count': toolsUsed.size,
+          'stream.tools_used': Array.from(toolsUsed).join(','),
+          'stream.parse_errors': parseErrorCount,
+          'request.duration_seconds': requestDuration,
+        }
+      ))
+
+      // Record metrics
+      recordDistribution('chat.client.stream_duration', streamDuration, {}, 'second')
+      recordDistribution('chat.client.request_duration', requestDuration, {}, 'second')
+      recordDistribution('chat.client.text_deltas', textDeltaCount)
+
+      // Track tool usage
+      toolsUsed.forEach(tool => {
+        incrementCounter('chat.client.tool_usage', 1, { tool })
+      })
+
       // If no content was streamed, remove the placeholder
       if (!streamingContent) {
         setMessages(prev => prev.filter(msg => msg.id !== streamingMessageId))
       }
-    } catch {
+    } catch (error) {
+      const err = error as Error
+      const requestDuration = (Date.now() - requestStartTime) / 1000
+
+      logError('Chat request error', buildErrorAttributes(
+        err.name || 'ChatError',
+        err.message,
+        {
+          'request.id': requestId,
+          'request.duration_seconds': requestDuration,
+          'chat.user_message_id': userMessage.id,
+        }
+      ), err)
+
+      incrementCounter('chat.client.errors', 1, { type: 'request_error' })
+
       const errorMessage: Message = {
         id: crypto.randomUUID(),
         role: 'assistant',
