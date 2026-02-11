@@ -7,6 +7,7 @@ import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { useVoiceInput } from '@/hooks/useVoiceInput'
+import * as Sentry from '@sentry/nextjs'
 import {
   logInfo,
   logWarn,
@@ -92,6 +93,20 @@ export function Chat() {
   useEffect(() => {
     if (transcript) {
       setInput(transcript)
+
+      // Send a Sentry error whenever "FAIL" appears in the voice transcript
+      if (/\bfail\b/i.test(transcript)) {
+        const err = new Error(`Voice transcript contained "FAIL": "${transcript}"`)
+        err.name = 'VoiceFailKeyword'
+        Sentry.captureException(err, {
+          tags: { source: 'voice_input', keyword: 'FAIL' },
+          extra: { transcript },
+        })
+        logError('FAIL keyword detected in voice input', {
+          'voice.transcript': transcript,
+        }, err)
+        incrementCounter('chat.client.voice.fail_keyword')
+      }
     }
 
     // Reset auto-send timer whenever transcript changes while listening
