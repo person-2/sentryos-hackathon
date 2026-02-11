@@ -7,7 +7,13 @@ import { DesktopIcon } from './DesktopIcon'
 import { Notepad } from './apps/Notepad'
 import { FolderView, FolderItem } from './apps/FolderView'
 import { Chat } from './apps/Chat'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import {
+  logInfo,
+  incrementCounter,
+  setSessionAttributes,
+  generateRequestId,
+} from '@/lib/sentry-utils'
 
 const INSTALL_GUIDE_CONTENT = `# SentryOS Install Guide
 
@@ -57,6 +63,37 @@ All text uses **JetBrains Mono** for that authentic terminal feel.
 function DesktopContent() {
   const { windows, openWindow } = useWindowManager()
   const [selectedIcon, setSelectedIcon] = useState<string | null>(null)
+
+  // Session tracking
+  useEffect(() => {
+    const sessionId = generateRequestId()
+    const sessionStartTime = Date.now()
+
+    logInfo('Desktop session started', {
+      'session.id': sessionId,
+      'session.timestamp': new Date().toISOString(),
+    })
+
+    // Set session attributes in Sentry isolation scope
+    setSessionAttributes(sessionId, {
+      started_at: new Date().toISOString(),
+      user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown',
+    })
+
+    incrementCounter('desktop.sessions.started')
+
+    // Log session end on unmount
+    return () => {
+      const sessionDuration = (Date.now() - sessionStartTime) / 1000
+
+      logInfo('Desktop session ended', {
+        'session.id': sessionId,
+        'session.duration_seconds': sessionDuration,
+      })
+
+      incrementCounter('desktop.sessions.ended')
+    }
+  }, [])
 
   const openInstallGuide = () => {
     openWindow({

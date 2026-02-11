@@ -13,4 +13,23 @@ Sentry.init({
 
   // Setting this option to true will print useful information to the console while you're setting up Sentry.
   debug: false,
+
+  // Enable structured logging
+  enableLogs: true,
+
+  // Configure global scope attributes
+  beforeSend(event) {
+    // Filter debug logs in production to reduce volume
+    if (process.env.NODE_ENV === 'production' && event.level === 'debug') {
+      return null;
+    }
+    return event;
+  },
+
+  initialScope: {
+    tags: {
+      component: 'edge',
+      environment: process.env.NODE_ENV || 'development',
+    },
+  },
 });
